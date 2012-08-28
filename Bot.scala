@@ -2,7 +2,7 @@ package skirmish
 
 import org.{ pircbotx => pb }
 import java.net.URLEncoder.encode
-import akka.actor._, akka.pattern._
+import akka.actor._, akka.pattern._, akka.event._
 
 object Bot {
   val system = ActorSystem("Skirmish")
@@ -13,28 +13,44 @@ object Bot {
   val EvanResponse = "evanresponse.*".r
   val NewEvanResponse = "tell evan (.*)".r
 
+  object Body {
+    def unapply(event: pb.hooks.types.GenericMessageEvent[Bot]): Option[String] = 
+      Some(event.getMessage())
+  }
+
+  object Sender {
+    def unapply(event: pb.hooks.types.GenericMessageEvent[Bot]): Option[String] = 
+      Some(event.getUser().getNick())
+  }
+
   implicit val defaultTimeout = akka.util.Timeout.never
 
   val logic = (ref: ActorRef) =>
     new pb.hooks.ListenerAdapter[Bot] with pb.hooks.Listener[Bot] {
       override def onMessage(event: pb.hooks.events.MessageEvent[Bot]) {
-        event.getMessage match {
-          case Greet() => event.respond("Hey there!")
-          case Proj(query) => event.respond("http://prj2epsg.org/search?terms=" + encode(query, "UTF-8"))
-          case EvanResponse() => 
+        event match {
+          case Body(Greet()) =>
+            event.respond("Hey there!")
+          case Body(Proj(query)) =>
+            event.respond("http://prj2epsg.org/search?terms=" + encode(query, "UTF-8"))
+          case Body(EvanResponse()) => 
             ref ! AskForMessage(event.getBot, event.getChannel)
-            for (Message(msg) <- ask(ref, AskForMessage))
-              event.getBot().sendMessage(event.getChannel, msg)
-          case x => // ignore.
-        }
+          case Sender(name) if name.toLowerCase == "evancc" =>
+            import scala.util.Random.nextInt
+            if (nextInt(100) == 0) 
+              ref ! AskForReply(event)
+        } 
       }
 
       override def onPrivateMessage(event: pb.hooks.events.PrivateMessageEvent[Bot]) {
-        event.getMessage match {
-          case NewEvanResponse(response) =>
+        event match {
+          case Body(NewEvanResponse(response)) =>
             ref ! AddNewMessage(response)
             event.respond("Yeah, sure. I'll tell him.")
-          case _ => event.respond("I don't get it.")
+          case Body(Greet()) =>
+            event.respond("Hey there!")
+          case _ =>
+            event.respond("I don't understand.")
         }
       }
     }
@@ -45,38 +61,35 @@ object Bot {
     bot.getListenerManager().addListener(logic(evanResponses))
     bot.setName("wolsni")
     bot.connect("irc.freenode.net")
-    bot.joinChannel("#opengeo-fp")
+    bot.joinChannel("#opengeo")
   }
 }
 
 case class AddNewMessage(msg: String)
 case class AskForMessage(bot: pb.PircBotX, channel: pb.Channel)
-case class BulkAddMessages(msgs: Seq[String])
+case class AskForReply(event: pb.hooks.events.MessageEvent[pb.PircBotX])
 case class Loaded(msgs: IndexedSeq[String])
 case class Message(msg: String)
-case class Recorded(msgs: Seq[String])
 case object LoadMessages
 
 class FileHandler extends Actor {
   val store: java.io.File = new java.io.File("evanmessages")
+  val log = Logging(context.system, this)
 
   def receive = {
-    case BulkAddMessages(msgs) => 
-      appendAll(msgs)
-      sender ! Recorded(msgs)
+    case AddNewMessage(msg) => append(msg)
     case LoadMessages =>
       try 
         sender ! Loaded(readAll)
       catch {
         case (ex: java.io.FileNotFoundException) =>
-          // Silently eat this one - if we don't have the file then we haven't
-          // recorded any messages for Evan yet.
+          log.info("File not found when loading Evan responses; falling back to empty list")
       }
   }
 
-  def appendAll(msgs: Seq[String]) =
-    closing(new java.io.PrintWriter(new java.io.FileWriter(store, true))) { f =>
-      msgs.foreach(f.println(_))
+  def append(msg: String) =
+    closing(new java.io.PrintWriter(new java.io.FileWriter(store, true))) {
+      _ println msg
     }
 
   def readAll: IndexedSeq[String] = 
@@ -110,24 +123,10 @@ class EvanResponder extends Actor {
   def receive = {
     case AskForMessage(bot, channel) => 
       randomMember(messages) foreach { bot.sendMessage(channel, _) } 
-    case Loaded(msgs) =>
-      messages = msgs
-    case AddNewMessage(msg) =>
-      if (recordingInFlight) {
-        pendingMessages +:= msg
-      } else {
-        recordingInFlight = true
-        fileHandler ! BulkAddMessages(Seq(msg))
-      }
-    case Recorded(msgs) =>
-      messages ++= msgs
-      if (pendingMessages.isEmpty) {
-        recordingInFlight = false
-      } else {
-        fileHandler ! BulkAddMessages(pendingMessages)
-        pendingMessages = Nil
-      }
-    case x => println("Unhandled message: " + x)
+    case AskForReply(event) => 
+      randomMember(messages) foreach { event.respond(_) }
+    case Loaded(msgs) => messages = msgs
+    case msg @ AddNewMessage(_) => fileHandler forward msg
   }
 
   def randomMember[A](xs: IndexedSeq[A]): Option[A] =
