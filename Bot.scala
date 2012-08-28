@@ -12,6 +12,8 @@ object Bot {
   val Proj = "proj (.*)".r
   val EvanResponse = "evanresponse.*".r
   val NewEvanResponse = "tell evan (.*)".r
+  val ChannelResponse = "go tell evan.*".r
+  val Channel = "#opengeo"
 
   object Body {
     def unapply(event: pb.hooks.types.GenericMessageEvent[Bot]): Option[String] = 
@@ -34,7 +36,7 @@ object Bot {
           case Body(Proj(query)) =>
             event.respond("http://prj2epsg.org/search?terms=" + encode(query, "UTF-8"))
           case Body(EvanResponse()) => 
-            ref ! AskForMessage(event.getBot, event.getChannel)
+            ref ! AskForReply(event)
           case Sender(name) if name.toLowerCase == "evancc" =>
             import scala.util.Random.nextInt
             if (nextInt(100) == 0) 
@@ -49,6 +51,10 @@ object Bot {
             event.respond("Yeah, sure. I'll tell him.")
           case Body(Greet()) =>
             event.respond("Hey there!")
+          case Body(EvanResponse()) => 
+            ref ! AskForReply(event)
+          case Body(ChannelResponse()) =>
+            ref ! AskForReplyInChannel(event.getBot, Channel)
           case _ =>
             event.respond("I don't understand.")
         }
@@ -61,13 +67,13 @@ object Bot {
     bot.getListenerManager().addListener(logic(evanResponses))
     bot.setName("wolsni")
     bot.connect("irc.freenode.net")
-    bot.joinChannel("#opengeo")
+    bot.joinChannel(Channel)
   }
 }
 
 case class AddNewMessage(msg: String)
-case class AskForMessage(bot: pb.PircBotX, channel: pb.Channel)
-case class AskForReply(event: pb.hooks.events.MessageEvent[pb.PircBotX])
+case class AskForReply(event: pb.hooks.types.GenericMessageEvent[pb.PircBotX])
+case class AskForReplyInChannel(bot: pb.PircBotX, channel: String)
 case class Loaded(msgs: IndexedSeq[String])
 case class Message(msg: String)
 case object LoadMessages
@@ -117,10 +123,10 @@ class EvanResponder extends Actor {
   fileHandler ! LoadMessages
 
   def receive = {
-    case AskForMessage(bot, channel) => 
-      randomMember(messages) foreach { bot.sendMessage(channel, _) } 
     case AskForReply(event) => 
       randomMember(messages) foreach { event.respond(_) }
+    case AskForReplyInChannel(bot, channel) => 
+      randomMember(messages) foreach { bot.sendMessage(channel, _) }
     case Loaded(msgs) => messages = msgs
     case msg @ AddNewMessage(text) =>
       messages :+= text
