@@ -112,10 +112,6 @@ class EvanResponder extends Actor {
 
   var messages = IndexedSeq.empty[String]
 
-  var pendingMessages = Nil: Seq[String]
-
-  var recordingInFlight: Boolean = false
-
   val fileHandler = context.actorOf(Props[FileHandler], name="filehandler")
 
   fileHandler ! LoadMessages
@@ -126,7 +122,9 @@ class EvanResponder extends Actor {
     case AskForReply(event) => 
       randomMember(messages) foreach { event.respond(_) }
     case Loaded(msgs) => messages = msgs
-    case msg @ AddNewMessage(_) => fileHandler forward msg
+    case msg @ AddNewMessage(text) =>
+      messages :+= text
+      fileHandler forward msg
   }
 
   def randomMember[A](xs: IndexedSeq[A]): Option[A] =
