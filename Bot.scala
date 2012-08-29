@@ -99,10 +99,14 @@ object Bot {
     }
 
   def main(args: Array[String]) {
-    loadBot() fold (
-      println(_),
-      _ => () // ignore the bot, we're already done with it.
-    )
+    loadBot() match {
+      case Left(message) =>
+        println(message)
+      case Right(bot) =>
+        Console.readLine("Press enter to stop bot...")
+        bot.shutdown()
+    }
+    system.shutdown()
   }
 }
 
