@@ -13,7 +13,6 @@ object Bot {
   val EvanResponse = "evanresponse.*".r
   val NewEvanResponse = "tell evan (.*)".r
   val ChannelResponse = "go tell evan.*".r
-  val Channel = "#opengeo"
 
   object Body {
     def unapply(event: pb.hooks.types.GenericMessageEvent[Bot]): Option[String] = 
@@ -27,7 +26,7 @@ object Bot {
 
   implicit val defaultTimeout = akka.util.Timeout.never
 
-  val logic = (ref: ActorRef) =>
+  val logic = (channel: String, ref: ActorRef) =>
     new pb.hooks.ListenerAdapter[Bot] with pb.hooks.Listener[Bot] {
       override def onMessage(event: pb.hooks.events.MessageEvent[Bot]) {
         event match {
@@ -54,20 +53,56 @@ object Bot {
           case Body(EvanResponse()) => 
             ref ! AskForReply(event)
           case Body(ChannelResponse()) =>
-            ref ! AskForReplyInChannel(event.getBot, Channel)
+            ref ! AskForReplyInChannel(event.getBot, channel)
           case _ =>
             event.respond("I don't understand.")
         }
       }
     }
 
+  implicit def rightBiasOnEither[A,B](e: Either[A,B]): Either.RightProjection[A, B] = e.right
+
+  val readProps: String => Either[String, java.util.Properties] =
+    filename =>
+      try {
+        val source = new java.io.FileReader("preferences.properties")
+        try {
+          val props = new java.util.Properties()
+          props.load(source)
+          Right(props)
+        } finally source.close()
+      } catch {
+        case (ex: java.io.IOException) => Left(ex.getMessage)
+      }
+
+  val getProp: String => java.util.Properties => Either[String, String] =
+    propertyName => properties => 
+      (properties getProperty propertyName) match {
+        case null => Left("Required property '%s' not present" format propertyName)
+        case value => Right(value)
+      }
+
+  def loadBot(): Either[String, Bot] = 
+    for {
+      props <- readProps("preferences.properties")
+      nick <- getProp("nick")(props)
+      server <- getProp("server")(props)
+      channel <- getProp("channel")(props)
+    } yield {
+      val bot = new pb.PircBotX
+      bot.setName(nick)
+      bot.connect("irc.freenode.net")
+      bot.joinChannel(channel)
+      val evanResponses = system.actorOf(Props[EvanResponder], name="evanresponder")
+      bot.getListenerManager().addListener(logic(channel, evanResponses))
+      bot
+    }
+
   def main(args: Array[String]) {
-    val bot = new pb.PircBotX
-    val evanResponses = system.actorOf(Props[EvanResponder], name="evanresponder")
-    bot.getListenerManager().addListener(logic(evanResponses))
-    bot.setName("wolsni")
-    bot.connect("irc.freenode.net")
-    bot.joinChannel(Channel)
+    loadBot() fold (
+      println(_),
+      _ => () // ignore the bot, we're already done with it.
+    )
   }
 }
 
