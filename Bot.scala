@@ -104,6 +104,7 @@ object Bot {
         println(message)
       case Right(bot) =>
         Console.readLine("Press enter to stop bot...")
+        bot.disconnect()
         bot.shutdown()
     }
     system.shutdown()
